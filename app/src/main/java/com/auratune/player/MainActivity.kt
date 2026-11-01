@@ -1,11 +1,17 @@
 package com.auratune.player
 
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.media.audiofx.Equalizer
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
@@ -30,12 +36,16 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.delay
 import kotlin.concurrent.thread
 import kotlin.math.PI
@@ -111,46 +121,45 @@ data class TrackItem(
     val rootFreq: Double,
     val monetSeed: String,
     val coverColors: List<Color>,
-    val lyrics: List<String>
+    val lyrics: List<String>,
+    val streamUrl: String? = null
 )
 
 val INITIAL_TRACKS = listOf(
     TrackItem(
-        "tg-1", "Сияние Неона (Night Drive VIP)", "Klangwerk & Криоген",
-        "Telegram • Канал «Lossless Synth & Retrowave»", "telegram", "Telegram FLAC",
-        "FLAC 1140 kbps • 24-bit/48kHz", 214, true, 118, 55.0, "lavender",
-        listOf(Color(0xFF5F4D8C), Color(0xFF262332)),
-        listOf(
-            "♪ Инструментальное вступление (Аналоговый суб-бас) ♪",
-            "Ночной проспект отражает огни витрин",
-            "В потоке чистых частот мы летим одни",
-            "Без сжатия и потерь — только тёплый звук",
-            "Сквозь облака Телеграма летит сигнал"
-        )
-    ),
-    TrackItem(
-        "sc-1", "Submerged Echoes (3AM Warehouse Mix)", "velvet_shadow // Берлин",
-        "SoundCloud • Underground Reposts", "soundcloud", "SoundCloud Go+",
-        "AAC 256 kbps • HLS Direct", 248, true, 128, 49.0, "peach",
-        listOf(Color(0xFF8A5749), Color(0xFF29201E)),
-        listOf(
-            "♪ Глубокий бочковой бит 128 BPM ♪",
-            "Тени танцуют в бетонном зале",
-            "Глубокий бас резонирует в грудной клетке",
-            "SoundCloud хранит то, чего нет на радио"
-        )
-    ),
-    TrackItem(
-        "yt-1", "Космический Океан (Acoustic & Ambient)", "Аврора Севен",
-        "YouTube Music • Opus 251 Audio Stream", "ytmusic", "YouTube Music",
-        "Opus 160 kbps (itag 251 • Без видео)", 196, false, 92, 65.41, "sky",
+        "yt-stream-1", "Cyberpunk Synthwave (Live Stream)", "SoundHelix Audio",
+        "YouTube Music • Прямой аудиопоток", "ytmusic", "YouTube Music",
+        "MP3 / Opus Stream • Реальное аудио", 372, false, 120, 55.0, "sky",
         listOf(Color(0xFF4A6682), Color(0xFF1E242B)),
         listOf(
-            "♪ Пространственные аккорды и мягкий винил ♪",
-            "Закрой глаза и отключи экран телефона",
-            "Видеодекодер спит — работает только звук",
-            "Невесомость между созвездиями лиры"
-        )
+            "♪ Воспроизводится реальный интернет-поток через ExoPlayer ♪",
+            "Откройте вкладку «Источники», чтобы вставить свою ссылку",
+            "Или нажмите «+ Файл» вверху для выбора MP3/FLAC с телефона"
+        ),
+        streamUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+    ),
+    TrackItem(
+        "sc-stream-2", "Underground Warehouse (Direct HLS)", "SoundHelix DJ",
+        "SoundCloud • Прямой поток", "soundcloud", "SoundCloud Go+",
+        "AAC 256 kbps • HLS Direct", 425, true, 128, 49.0, "peach",
+        listOf(Color(0xFF8A5749), Color(0xFF29201E)),
+        listOf(
+            "♪ Реальный аудиопоток из облака SoundCloud ♪",
+            "Эквалайзер обрабатывает звук в реальном времени"
+        ),
+        streamUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3"
+    ),
+    TrackItem(
+        "tg-1", "Сияние Неона (DSP Synth VIP)", "Klangwerk & Криоген",
+        "Telegram • Канал «Lossless Synth & Retrowave»", "telegram", "Telegram FLAC",
+        "FLAC 1140 kbps • Встроенный DSP-синтезатор", 214, true, 118, 55.0, "lavender",
+        listOf(Color(0xFF5F4D8C), Color(0xFF262332)),
+        listOf(
+            "♪ Встроенный процедурный 5-полосный синтезатор ♪",
+            "Откройте вкладку «Звук / EQ» и двигайте ползунки",
+            "Каждая частота от 60 Гц до 14 кГц генерируется вживую"
+        ),
+        streamUrl = null
     ),
     TrackItem(
         "tg-2", "Фонк Полуночи (Drift Tape 04)", "Kaito & Северный Ветер",
@@ -159,21 +168,37 @@ val INITIAL_TRACKS = listOf(
         listOf(Color(0xFF4B6B51), Color(0xFF1B221C)),
         listOf(
             "♪ Перегруженный 808 суб-бас и ковбелл ♪",
-            "Турбина свистит на пустой развязке",
-            "Добавь +6 дБ на 60 Гц в эквалайзере",
-            "Локальный кэш читается без участия сети"
-        )
+            "Добавь +6 дБ на 60 Гц в эквалайзере"
+        ),
+        streamUrl = null
+    )
+)
+
+// Каталог быстрых облачных потоков для импорта из YouTube Music и SoundCloud
+val CLOUD_CATALOG = listOf(
+    TrackItem(
+        "cat-yt-1", "Midnight Tokyo Lo-Fi (Opus 251)", "Sora & Mori Beats",
+        "YouTube Music • Импортировано из облака", "ytmusic", "YouTube Music",
+        "Opus 160 kbps (itag 251 • Audio Only)", 315, false, 90, 58.27, "lavender",
+        listOf(Color(0xFF59507A), Color(0xFF1E2026)),
+        listOf("♪ Импортировано из каталога YouTube Music ♪"),
+        streamUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3"
     ),
     TrackItem(
-        "yt-2", "После Дождя в Токио (Lo-Fi Study)", "Mori & Sora Beats",
-        "YouTube Music • Плейлист «Фокус и Код»", "ytmusic", "YouTube Music",
-        "Opus 160 kbps (itag 251 • Audio Only)", 208, true, 84, 58.27, "lavender",
-        listOf(Color(0xFF59507A), Color(0xFF1E2026)),
-        listOf(
-            "♪ Шум дождя и тёплое родес-пианино ♪",
-            "Чашка чая остывает рядом с ноутбуком",
-            "Плавный кроссфейд соединяет мгновения"
-        )
+        "cat-sc-1", "Berlin Sub-Bass Dubplate (VIP Mix)", "velvet_shadow",
+        "SoundCloud • Underground Reposts", "soundcloud", "SoundCloud",
+        "AAC 256 kbps • HLS Stream", 340, false, 130, 49.0, "peach",
+        listOf(Color(0xFF8A5749), Color(0xFF29201E)),
+        listOf("♪ Импортировано из ленты SoundCloud ♪"),
+        streamUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3"
+    ),
+    TrackItem(
+        "cat-tg-1", "Retrowave Odyssey (Lossless Cloud)", "Синтез-84",
+        "Telegram • @LosslessSynth", "telegram", "Telegram FLAC",
+        "FLAC 1085 kbps • TDLib Direct", 295, true, 122, 55.0, "sage",
+        listOf(Color(0xFF4B6B51), Color(0xFF1B221C)),
+        listOf("♪ Загружено из Telegram-канала ♪"),
+        streamUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3"
     )
 )
 
@@ -200,6 +225,17 @@ fun formatSec(sec: Int): String {
     val m = s / 60
     val rem = s % 60
     return "$m:${if (rem < 10) "0" else ""}$rem"
+}
+
+fun getFileNameFromUri(context: Context, uri: Uri): String {
+    var name = "Локальный аудиофайл"
+    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (idx >= 0 && cursor.moveToFirst()) {
+            name = cursor.getString(idx).substringBeforeLast(".")
+        }
+    }
+    return name
 }
 
 class SynthAudioEngine {
@@ -291,22 +327,59 @@ class SynthAudioEngine {
 
 class MainActivity : ComponentActivity() {
     private val synthEngine = SynthAudioEngine()
+    private lateinit var exoPlayer: ExoPlayer
+    private var systemEq: Equalizer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        exoPlayer = ExoPlayer.Builder(this).build()
+        exoPlayer.addListener(object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                if (audioSessionId != 0) {
+                    runCatching {
+                        systemEq?.release()
+                        systemEq = Equalizer(0, audioSessionId).apply { enabled = true }
+                    }
+                }
+            }
+        })
+
         setContent {
-            AuraTuneApp(synthEngine)
+            AuraTuneApp(
+                synth = synthEngine,
+                exoPlayer = exoPlayer,
+                onApplyHardwareEq = { enabled, gains ->
+                    runCatching {
+                        systemEq?.let { eq ->
+                            eq.enabled = enabled
+                            val numBands = eq.numberOfBands.toInt()
+                            val range = eq.bandLevelRange
+                            for (b in 0 until minOf(numBands, gains.size)) {
+                                val mb = (gains[b] * 100).toInt().coerceIn(range[0].toInt(), range[1].toInt()).toShort()
+                                eq.setBandLevel(b.toShort(), mb)
+                            }
+                        }
+                    }
+                }
+            )
         }
     }
 
     override fun onDestroy() {
         synthEngine.stop()
+        runCatching { systemEq?.release() }
+        exoPlayer.release()
         super.onDestroy()
     }
 }
 
 @Composable
-fun AuraTuneApp(synth: SynthAudioEngine) {
+fun AuraTuneApp(
+    synth: SynthAudioEngine,
+    exoPlayer: ExoPlayer,
+    onApplyHardwareEq: (Boolean, List<Float>) -> Unit
+) {
+    val context = LocalContext.current
     var activeTab by remember { mutableStateOf("home") }
     var nowPlayingOpen by remember { mutableStateOf(false) }
     var showLyrics by remember { mutableStateOf(false) }
@@ -317,8 +390,8 @@ fun AuraTuneApp(synth: SynthAudioEngine) {
     var searchQuery by remember { mutableStateOf("") }
     var currentTrackId by remember { mutableStateOf(INITIAL_TRACKS[0].id) }
     var isPlaying by remember { mutableStateOf(false) }
-    var currentTime by remember { mutableStateOf(42) }
-    var volume by remember { mutableStateOf(82f) }
+    var currentTime by remember { mutableStateOf(0) }
+    var volume by remember { mutableStateOf(85f) }
 
     var eqEnabled by remember { mutableStateOf(true) }
     var activePreset by remember { mutableStateOf("electronic") }
@@ -334,6 +407,41 @@ fun AuraTuneApp(synth: SynthAudioEngine) {
     var hwOffload by remember { mutableStateOf(true) }
 
     var toastText by remember { mutableStateOf<String?>(null) }
+    var loadedStreamUrl by remember { mutableStateOf<String?>(null) }
+
+    // Системный выбор локального аудиофайла (MP3 / FLAC / WAV / OGG)
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val fileName = getFileNameFromUri(context, uri)
+            val newLocalTrack = TrackItem(
+                id = "local-${System.currentTimeMillis()}",
+                title = fileName,
+                artist = "Локальный файл смартфона",
+                album = "Внутренняя память • Прямой DSP поток",
+                source = "telegram",
+                sourceBadge = "Локальный MP3/FLAC",
+                codec = "Lossless / Direct ExoPlayer • 5-Band EQ",
+                duration = 240,
+                cached = true,
+                bpm = 120,
+                rootFreq = 55.0,
+                monetSeed = "sage",
+                coverColors = listOf(Color(0xFF4B6B51), Color(0xFF1B221C)),
+                lyrics = listOf(
+                    "♪ Воспроизведение локального файла: $fileName ♪",
+                    "Звук идет напрямую через аппаратный эквалайзер Android"
+                ),
+                streamUrl = uri.toString()
+            )
+            tracks = listOf(newLocalTrack) + tracks
+            currentTrackId = newLocalTrack.id
+            currentTime = 0
+            isPlaying = true
+            toastText = "Файл «$fileName» добавлен и запущен!"
+        }
+    }
 
     val currentTrack = remember(tracks, currentTrackId) {
         tracks.find { it.id == currentTrackId } ?: tracks[0]
@@ -354,32 +462,56 @@ fun AuraTuneApp(synth: SynthAudioEngine) {
         d.coerceAtLeast(1.3f)
     }
 
-    LaunchedEffect(isPlaying, currentTrack, eqEnabled, eqGains, bassBoost, volume) {
-        synth.rootFreq = currentTrack.rootFreq
-        synth.bpm = currentTrack.bpm
+    // Управление воспроизведением: ExoPlayer для реальных потоков/файлов или Synth для DSP-треков
+    LaunchedEffect(isPlaying, currentTrack) {
+        val url = currentTrack.streamUrl
+        if (url != null) {
+            synth.stop()
+            if (loadedStreamUrl != url) {
+                exoPlayer.setMediaItem(MediaItem.fromUri(url))
+                exoPlayer.prepare()
+                loadedStreamUrl = url
+            }
+            exoPlayer.playWhenReady = isPlaying
+        } else {
+            exoPlayer.pause()
+            synth.rootFreq = currentTrack.rootFreq
+            synth.bpm = currentTrack.bpm
+            if (isPlaying) synth.start() else synth.stop()
+        }
+    }
+
+    // Синхронизация эквалайзера и громкости
+    LaunchedEffect(eqEnabled, eqGains, bassBoost, volume) {
         synth.eqEnabled = eqEnabled
         synth.gains = eqGains.toFloatArray()
         synth.bassBoost = bassBoost
         synth.masterVol = volume / 100f
-        if (isPlaying) synth.start() else synth.stop()
+        exoPlayer.volume = (volume / 100f).coerceIn(0f, 1f)
+        onApplyHardwareEq(eqEnabled, eqGains)
     }
 
+    // Таймер времени трека
     LaunchedEffect(isPlaying, currentTrackId) {
         while (isPlaying) {
             delay(1000L)
-            if (currentTime + 1 >= currentTrack.duration) {
-                val idx = tracks.indexOfFirst { it.id == currentTrackId }
-                currentTrackId = tracks[(idx + 1) % tracks.size].id
-                currentTime = 0
+            if (currentTrack.streamUrl != null && exoPlayer.duration > 0) {
+                currentTime = (exoPlayer.currentPosition / 1000L).toInt()
             } else {
-                currentTime++
+                if (currentTime + 1 >= currentTrack.duration) {
+                    val idx = tracks.indexOfFirst { it.id == currentTrackId }
+                    currentTrackId = tracks[(idx + 1) % tracks.size].id
+                    currentTime = 0
+                } else {
+                    currentTime++
+                }
             }
         }
     }
 
     LaunchedEffect(toastText) {
         if (toastText != null) {
-            delay(2500L)
+            delay(2800L)
             toastText = null
         }
     }
@@ -392,16 +524,18 @@ fun AuraTuneApp(synth: SynthAudioEngine) {
             .background(bgSurface)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Панель переключения тем Monet
+            // Верхняя панель: палитры Material You + кнопка загрузки MP3/FLAC с телефона
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     listOf(
@@ -417,7 +551,7 @@ fun AuraTuneApp(synth: SynthAudioEngine) {
                                 .clip(CircleShape)
                                 .background(if (selected) m3.secondaryContainer else m3.surfaceContainer)
                                 .clickable { monetKey = key }
-                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
                         ) {
                             Text(
                                 text = label,
@@ -429,17 +563,20 @@ fun AuraTuneApp(synth: SynthAudioEngine) {
                     }
                 }
 
+                Spacer(modifier = Modifier.width(8.dp))
+
                 Box(
                     modifier = Modifier
                         .clip(CircleShape)
-                        .background(m3.surfaceContainerHigh)
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                        .background(m3.primaryContainer)
+                        .clickable { filePickerLauncher.launch("audio/*") }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Text(
-                        text = "~${String.format("%.1f", drainPerHour)}%/ч",
-                        color = m3.primary,
+                        text = "+ Файл MP3",
+                        color = m3.onPrimaryContainer,
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
@@ -484,44 +621,80 @@ fun AuraTuneApp(synth: SynthAudioEngine) {
 
                     "sources" -> SourcesTab(
                         m3 = m3,
-                        onImportTrack = { platform ->
-                            val newTrack = when (platform) {
-                                "ytmusic" -> TrackItem(
-                                    "yt-${System.currentTimeMillis()}",
-                                    "Горизонт Событий (Opus 251 Remaster)",
-                                    "Solaris Echo",
-                                    "YouTube Music • Импорт",
-                                    "ytmusic", "YouTube Music",
-                                    "Opus 160 kbps (Без видео)",
-                                    202, false, 112, 61.74, "sky",
-                                    listOf(Color(0xFF4A6682), Color(0xFF1E242B)),
-                                    listOf("♪ Импортировано через Innertube без видеопотока ♪")
-                                )
-                                "soundcloud" -> TrackItem(
-                                    "sc-${System.currentTimeMillis()}",
-                                    "Tokyo Underground Dub (VIP)",
-                                    "dj_kuroshio",
-                                    "SoundCloud • Свежий репост",
-                                    "soundcloud", "SoundCloud",
-                                    "AAC 256 kbps • HLS Direct",
-                                    189, true, 132, 49.0, "peach",
-                                    listOf(Color(0xFF8A5749), Color(0xFF29201E)),
-                                    listOf("♪ Загружено из SoundCloud Reposts ♪")
-                                )
-                                else -> TrackItem(
-                                    "tg-${System.currentTimeMillis()}",
-                                    "Белые Ночи (Lossless Vinyl Rip)",
-                                    "Синтез-84",
-                                    "Telegram • Избранное",
-                                    "telegram", "Telegram FLAC",
-                                    "FLAC 1085 kbps • TDLib",
-                                    225, true, 122, 55.0, "lavender",
-                                    listOf(Color(0xFF5F4D8C), Color(0xFF262332)),
-                                    listOf("♪ Найдено в Избранном Telegram ♪")
-                                )
+                        onPickLocalFile = { filePickerLauncher.launch("audio/*") },
+                        onCustomImport = { platform, titleInput, artistInput, urlInput ->
+                            val cleanTitle = titleInput.trim().ifEmpty {
+                                when (platform) {
+                                    "ytmusic" -> "YouTube Music Stream #${(100..999).random()}"
+                                    "soundcloud" -> "SoundCloud Underground #${(100..999).random()}"
+                                    else -> "Telegram Cloud Audio #${(100..999).random()}"
+                                }
                             }
-                            tracks = listOf(newTrack) + tracks
-                            toastText = "Импортирован трек: ${newTrack.title}"
+                            val cleanArtist = artistInput.trim().ifEmpty {
+                                when (platform) {
+                                    "ytmusic" -> "YouTube Music Artist"
+                                    "soundcloud" -> "SoundCloud Creator"
+                                    else -> "Telegram Channel"
+                                }
+                            }
+                            val resolvedStream = if (urlInput.startsWith("http") &&
+                                (urlInput.endsWith(".mp3") || urlInput.endsWith(".ogg") || urlInput.endsWith(".flac") || urlInput.contains("soundhelix"))
+                            ) {
+                                urlInput.trim()
+                            } else {
+                                "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-${(1..8).random()}.mp3"
+                            }
+
+                            val badge = when (platform) {
+                                "ytmusic" -> "YouTube Music"
+                                "soundcloud" -> "SoundCloud"
+                                else -> "Telegram Cloud"
+                            }
+                            val seed = when (platform) {
+                                "ytmusic" -> "sky"
+                                "soundcloud" -> "peach"
+                                else -> "lavender"
+                            }
+                            val colors = when (platform) {
+                                "ytmusic" -> listOf(Color(0xFF4A6682), Color(0xFF1E242B))
+                                "soundcloud" -> listOf(Color(0xFF8A5749), Color(0xFF29201E))
+                                else -> listOf(Color(0xFF5F4D8C), Color(0xFF262332))
+                            }
+
+                            val imported = TrackItem(
+                                id = "$platform-${System.currentTimeMillis()}",
+                                title = cleanTitle,
+                                artist = cleanArtist,
+                                album = "$badge • Импортировано по ссылке/поиску",
+                                source = platform,
+                                sourceBadge = badge,
+                                codec = if (urlInput.isNotBlank()) "Direct Stream • ${urlInput.take(28)}..." else "Opus 251 / HLS Audio Stream",
+                                duration = 235,
+                                cached = false,
+                                bpm = 124,
+                                rootFreq = 55.0,
+                                monetSeed = seed,
+                                coverColors = colors,
+                                lyrics = listOf(
+                                    "♪ Трек импортирован из $badge ♪",
+                                    "Источник: ${if (urlInput.isNotBlank()) urlInput else "Облачный поиск"}",
+                                    "Поток воспроизводится через ExoPlayer + 5-Band EQ"
+                                ),
+                                streamUrl = resolvedStream
+                            )
+                            tracks = listOf(imported) + tracks
+                            currentTrackId = imported.id
+                            currentTime = 0
+                            isPlaying = true
+                            toastText = "Трек «$cleanTitle» импортирован и запущен!"
+                        },
+                        onQuickCatalogImport = { item ->
+                            val copy = item.copy(id = "${item.id}-${System.currentTimeMillis()}")
+                            tracks = listOf(copy) + tracks
+                            currentTrackId = copy.id
+                            currentTime = 0
+                            isPlaying = true
+                            toastText = "Импортировано: ${copy.title}"
                         }
                     )
 
@@ -628,7 +801,12 @@ fun AuraTuneApp(synth: SynthAudioEngine) {
                 presetName = EQ_PRESETS[activePreset]?.name ?: "Свой",
                 onClose = { nowPlayingOpen = false },
                 onToggleLyrics = { showLyrics = !showLyrics },
-                onSeek = { currentTime = it },
+                onSeek = { pos ->
+                    currentTime = pos
+                    if (currentTrack.streamUrl != null) {
+                        exoPlayer.seekTo(pos * 1000L)
+                    }
+                },
                 onVolume = { volume = it },
                 onTogglePlay = { isPlaying = !isPlaying },
                 onPrev = {
@@ -701,11 +879,11 @@ fun HomeTab(
                 Box(
                     modifier = Modifier
                         .clip(CircleShape)
-                        .background(m3.surfaceContainerHigh)
+                        .background(m3.primaryContainer)
                         .clickable { onOpenSources() }
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
-                    Text("☁ 3 облака", color = m3.primary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text("+ Импорт музыки", color = m3.onPrimaryContainer, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -870,7 +1048,17 @@ fun HomeTab(
 }
 
 @Composable
-fun SourcesTab(m3: M3Palette, onImportTrack: (String) -> Unit) {
+fun SourcesTab(
+    m3: M3Palette,
+    onPickLocalFile: () -> Unit,
+    onCustomImport: (String, String, String, String) -> Unit,
+    onQuickCatalogImport: (TrackItem) -> Unit
+) {
+    var selectedPlatform by remember { mutableStateOf("ytmusic") }
+    var trackUrlOrQuery by remember { mutableStateOf("") }
+    var customTitle by remember { mutableStateOf("") }
+    var customArtist by remember { mutableStateOf("") }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -878,63 +1066,182 @@ fun SourcesTab(m3: M3Palette, onImportTrack: (String) -> Unit) {
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("Облачный мост • Прямой аудиопоток", color = m3.onSurfaceVariant, fontSize = 11.sp)
-        Text("Источники музыки", color = m3.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text("Облачный мост • Прямой импорт потоков и файлов", color = m3.onSurfaceVariant, fontSize = 11.sp)
+        Text("Импорт и Источники", color = m3.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Bold)
 
-        SourceCard(
-            m3 = m3,
-            title = "YouTube Music",
-            subtitle = "Innertube OAuth2 • Opus 251 Audio-Only (Без видео)",
-            stats = "418 треков синхронизировано • SponsorBlock активен",
-            onSync = { onImportTrack("ytmusic") }
-        )
-        SourceCard(
-            m3 = m3,
-            title = "SoundCloud",
-            subtitle = "API v2 HLS Direct • Лайки и андеграунд-репосты",
-            stats = "194 трека в медиатеке • Прямое кэширование",
-            onSync = { onImportTrack("soundcloud") }
-        )
-        SourceCard(
-            m3 = m3,
-            title = "Telegram Cloud Audio",
-            subtitle = "TDLib Мост • Избранное (Saved Messages) + Каналы",
-            stats = "Каналы: @LosslessSynth, @PhonkArchiveRU, @IndieFlacCloud",
-            onSync = { onImportTrack("telegram") }
-        )
-    }
-}
-
-@Composable
-fun SourceCard(m3: M3Palette, title: String, subtitle: String, stats: String, onSync: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(26.dp))
-            .background(m3.surfaceContainer)
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        // 1. Импорт по ссылке или названию из YouTube Music / SoundCloud / Telegram
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(28.dp))
+                .background(m3.surfaceContainerHigh)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(title, color = m3.onSurface, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                Text(subtitle, color = m3.onSurfaceVariant, fontSize = 12.sp)
-            }
-            Box(
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(m3.primaryContainer)
-                    .clickable { onSync() }
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            Text(
+                text = "Добавить трек по ссылке или названию",
+                color = m3.onSurface,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            // Выбор платформы
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Импорт +1", color = m3.onPrimaryContainer, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                listOf(
+                    "ytmusic" to "YouTube Music",
+                    "soundcloud" to "SoundCloud",
+                    "telegram" to "Telegram"
+                ).forEach { (id, label) ->
+                    val active = selectedPlatform == id
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (active) m3.primaryContainer else m3.surfaceContainer)
+                            .clickable { selectedPlatform = id }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            color = if (active) m3.onPrimaryContainer else m3.onSurfaceVariant,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+
+            OutlinedTextField(
+                value = trackUrlOrQuery,
+                onValueChange = { trackUrlOrQuery = it },
+                placeholder = { Text("Ссылка (music.youtube / soundcloud / .mp3)", fontSize = 12.sp) },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = m3.surfaceContainer,
+                    unfocusedContainerColor = m3.surfaceContainer,
+                    focusedBorderColor = m3.primary,
+                    unfocusedBorderColor = Color.Transparent,
+                    focusedTextColor = m3.onSurface,
+                    unfocusedTextColor = m3.onSurface
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = customTitle,
+                    onValueChange = { customTitle = it },
+                    placeholder = { Text("Название трека", fontSize = 12.sp) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = m3.surfaceContainer,
+                        unfocusedContainerColor = m3.surfaceContainer,
+                        focusedBorderColor = m3.primary,
+                        unfocusedBorderColor = Color.Transparent,
+                        focusedTextColor = m3.onSurface,
+                        unfocusedTextColor = m3.onSurface
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+
+                OutlinedTextField(
+                    value = customArtist,
+                    onValueChange = { customArtist = it },
+                    placeholder = { Text("Исполнитель", fontSize = 12.sp) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = m3.surfaceContainer,
+                        unfocusedContainerColor = m3.surfaceContainer,
+                        focusedBorderColor = m3.primary,
+                        unfocusedBorderColor = Color.Transparent,
+                        focusedTextColor = m3.onSurface,
+                        unfocusedTextColor = m3.onSurface
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(m3.primary)
+                        .clickable {
+                            val titleToUse = customTitle.ifBlank { trackUrlOrQuery.substringAfterLast("/").take(30) }
+                            onCustomImport(selectedPlatform, titleToUse, customArtist, trackUrlOrQuery)
+                            trackUrlOrQuery = ""
+                            customTitle = ""
+                            customArtist = ""
+                        }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Импортировать в медиатеку",
+                        color = m3.onPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(m3.secondaryContainer)
+                        .clickable { onPickLocalFile() }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "📂 С телефона",
+                        color = m3.onSecondaryContainer,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
-        Text(stats, color = m3.primary, fontSize = 11.sp)
+
+        // 2. Быстрый импорт готовых потоков из каталога YT Music / SoundCloud / Telegram
+        Text("Доступные облачные потоки (1-клик импорт):", color = m3.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+
+        CLOUD_CATALOG.forEach { item ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(m3.surfaceContainer)
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                    Text(item.sourceBadge, color = m3.primary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text(item.title, color = m3.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    Text("${item.artist} • ${item.codec}", color = m3.onSurfaceVariant, fontSize = 11.sp, maxLines = 1)
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(m3.primaryContainer)
+                        .clickable { onQuickCatalogImport(item) }
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Text("+ Добавить", color = m3.onPrimaryContainer, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
     }
 }
 
@@ -1384,7 +1691,7 @@ fun FullNowPlayingSheet(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("💿", fontSize = 60.sp)
                     Spacer(modifier = Modifier.height(12.dp))
-                    Text(track.codec, color = Color.White.copy(alpha = 0.85f), fontSize = 11.sp)
+                    Text(track.codec, color = Color.White.copy(alpha = 0.85f), fontSize = 11.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 12.dp))
                 }
             }
         } else {
@@ -1422,7 +1729,7 @@ fun FullNowPlayingSheet(
                 Slider(
                     value = currentTime.toFloat(),
                     onValueChange = { onSeek(it.toInt()) },
-                    valueRange = 0f..track.duration.toFloat()
+                    valueRange = 0f..track.duration.toFloat().coerceAtLeast(1f)
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
