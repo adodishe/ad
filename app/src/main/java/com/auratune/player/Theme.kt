@@ -1,7 +1,6 @@
 package com.auratune.player
 
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.materialLightColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
