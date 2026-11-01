@@ -20,7 +20,7 @@ jobs:
         distribution: 'temurin'
 
     - name: Build APK via System Gradle
-      run: gradle :app:assembleDebug --no-daemon
+      run: gradle :app:assembleDebug --no-daemon --stacktrace
 
     - name: Upload Ready APK
       uses: actions/upload-artifact@v4
