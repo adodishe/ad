@@ -186,17 +186,55 @@ object RealStreamExtractor {
         return null
     }
 
-    private fun httpGet(urlStr: String): String? {
+   private fun fetchViaInnertube(videoId: String): TrackItem? {
         return runCatching {
-            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 7000
-                readTimeout = 7000
-                setRequestProperty("User-Agent", "Mozilla/5.0 (Android 14; Mobile)")
+            // Используем публичные стабильные API шлюзы Piped, которые отдают готовый JSON с прямыми ссылками на аудио
+            val mirrors = listOf(
+                "https://pipedapi.kavin.rocks/streams/$videoId",
+                "https://pipedapi.tokhmi.xyz/streams/$videoId",
+                "https://api.piped.private.coffee/streams/$videoId"
+            )
+            for (mUrl in mirrors) {
+                val resp = httpGet(mUrl) ?: continue
+                val json = JSONObject(resp)
+                val title = json.optString("title", "YouTube Track")
+                val uploader = json.optString("uploader", "YouTube Music")
+                val duration = json.optInt("duration", 210)
+                val audioStreams = json.optJSONArray("audioStreams") ?: continue
+
+                var bestUrl: String? = null
+                var maxBitrate = 0
+                for (i in 0 until audioStreams.length()) {
+                    val stream = audioStreams.getJSONObject(i)
+                    val u = stream.optString("url", "")
+                    val br = stream.optInt("bitrate", 0)
+                    if (u.isNotEmpty() && br >= maxBitrate) {
+                        maxBitrate = br
+                        bestUrl = u
+                    }
+                }
+
+                if (!bestUrl.isNullOrEmpty()) {
+                    return TrackItem(
+                        id = "yt-$videoId-${System.currentTimeMillis()}",
+                        title = title,
+                        artist = uploader,
+                        album = "YouTube Music • Piped Proxy Stream",
+                        source = "ytmusic",
+                        sourceBadge = "YouTube Music",
+                        codec = "Opus ${maxBitrate / 1000} kbps • Audio Only",
+                        duration = duration.coerceAtLeast(30),
+                        cached = false,
+                        bpm = 120,
+                        rootFreq = 55.0,
+                        monetSeed = "sky",
+                        coverColors = listOf(Color(0xFF4A6682), Color(0xFF1E242B)),
+                        lyrics = listOf("♪ Поток извлечен через Piped API ($title) ♪", "Автор: $uploader"),
+                        streamUrl = bestUrl
+                    )
+                }
             }
-            if (conn.responseCode in 200..299) {
-                BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
-            } else null
+            null
         }.getOrNull()
     }
 
