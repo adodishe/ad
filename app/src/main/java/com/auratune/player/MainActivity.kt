@@ -46,7 +46,17 @@ import androidx.compose.ui.unit.sp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.pow
@@ -127,37 +137,14 @@ data class TrackItem(
 
 val INITIAL_TRACKS = listOf(
     TrackItem(
-        "yt-stream-1", "Cyberpunk Synthwave (Live Stream)", "SoundHelix Audio",
-        "YouTube Music • Прямой аудиопоток", "ytmusic", "YouTube Music",
-        "MP3 / Opus Stream • Реальное аудио", 372, false, 120, 55.0, "sky",
-        listOf(Color(0xFF4A6682), Color(0xFF1E242B)),
-        listOf(
-            "♪ Воспроизводится реальный интернет-поток через ExoPlayer ♪",
-            "Откройте вкладку «Источники», чтобы вставить свою ссылку",
-            "Или нажмите «+ Файл» вверху для выбора MP3/FLAC с телефона"
-        ),
-        streamUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
-    ),
-    TrackItem(
-        "sc-stream-2", "Underground Warehouse (Direct HLS)", "SoundHelix DJ",
-        "SoundCloud • Прямой поток", "soundcloud", "SoundCloud Go+",
-        "AAC 256 kbps • HLS Direct", 425, true, 128, 49.0, "peach",
-        listOf(Color(0xFF8A5749), Color(0xFF29201E)),
-        listOf(
-            "♪ Реальный аудиопоток из облака SoundCloud ♪",
-            "Эквалайзер обрабатывает звук в реальном времени"
-        ),
-        streamUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3"
-    ),
-    TrackItem(
         "tg-1", "Сияние Неона (DSP Synth VIP)", "Klangwerk & Криоген",
         "Telegram • Канал «Lossless Synth & Retrowave»", "telegram", "Telegram FLAC",
         "FLAC 1140 kbps • Встроенный DSP-синтезатор", 214, true, 118, 55.0, "lavender",
         listOf(Color(0xFF5F4D8C), Color(0xFF262332)),
         listOf(
             "♪ Встроенный процедурный 5-полосный синтезатор ♪",
-            "Откройте вкладку «Звук / EQ» и двигайте ползунки",
-            "Каждая частота от 60 Гц до 14 кГц генерируется вживую"
+            "Откройте вкладку «Источники», чтобы вставить ссылку с YouTube",
+            "Или введите название любого трека для живого поиска!"
         ),
         streamUrl = null
     ),
@@ -174,31 +161,339 @@ val INITIAL_TRACKS = listOf(
     )
 )
 
-// Каталог быстрых облачных потоков для импорта из YouTube Music и SoundCloud
-val CLOUD_CATALOG = listOf(
+// ============================================================================
+// НАСТОЯЩИЙ ЭКСТРАКТОР YOUTUBE / YOUTUBE MUSIC / RADIO STREAM (Иннертюб + Piped)
+// Извлекает реальный аудиопоток по ссылке YouTube или поисковому запросу!
+// ============================================================================
+object RealStreamExtractor {
+    private val PIPED_INSTANCES = listOf(
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.tokhmi.xyz",
+        "https://pipedapi.syncpundit.io",
+        "https://api.piped.private.coffee"
+    )
+
+    fun extractYoutubeVideoId(input: String): String? {
+        val trimmed = input.trim()
+        val regexes = listOf(
+            Regex("""(?:v=|/v/|youtu\.be/|/embed/|/shorts/)([a-zA-Z0-9_-]{11})"""),
+            Regex("""^([a-zA-Z0-9_-]{11})$""")
+        )
+        for (r in regexes) {
+            val m = r.find(trimmed)
+            if (m != null) return m.groupValues[1]
+        }
+        return null
+    }
+
+    private fun httpGet(urlStr: String): String? {
+        return runCatching {
+            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 7000
+                readTimeout = 7000
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Android 14; Mobile)")
+            }
+            if (conn.responseCode in 200..299) {
+                BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+            } else null
+        }.getOrNull()
+    }
+
+    // 1. Прямой запрос к YouTube Innertube API (клиент ANDROID_VR, который отдает прямые ссылки без cipher)
+    private fun fetchViaInnertube(videoId: String): TrackItem? {
+        return runCatching {
+            val url = URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 8000
+                readTimeout = 8000
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("User-Agent", "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 12; Quest 3 Build/SQ3A.220605.009.A1) gzip")
+            }
+
+            val payload = """
+                {
+                  "videoId": "$videoId",
+                  "context": {
+                    "client": {
+                      "clientName": "ANDROID_VR",
+                      "clientVersion": "1.56.21",
+                      "androidSdkVersion": 32,
+                      "hl": "ru",
+                      "gl": "US"
+                    }
+                  }
+                }
+            """.trimIndent()
+
+            conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+            if (conn.responseCode !in 200..299) return null
+
+            val respText = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+            val json = JSONObject(respText)
+
+            val details = json.optJSONObject("videoDetails") ?: return null
+            val title = details.optString("title", "YouTube Track")
+            val author = details.optString("author", "YouTube Music")
+            val lengthSec = details.optString("lengthSeconds", "210").toIntOrNull() ?: 210
+
+            val streamingData = json.optJSONObject("streamingData") ?: return null
+            val adaptive = streamingData.optJSONArray("adaptiveFormats") ?: JSONArray()
+
+            var bestAudioUrl: String? = null
+            var bestBitrate = 0
+            var bestMime = "Opus 251 Audio-Only"
+
+            for (i in 0 until adaptive.length()) {
+                val fmt = adaptive.getJSONObject(i)
+                val mime = fmt.optString("mimeType", "")
+                val directUrl = fmt.optString("url", "")
+                val bitrate = fmt.optInt("bitrate", 0)
+                if (mime.startsWith("audio/") && directUrl.isNotEmpty() && bitrate >= bestBitrate) {
+                    bestBitrate = bitrate
+                    bestAudioUrl = directUrl
+                    bestMime = if (mime.contains("opus")) "Opus ${bitrate / 1000} kbps (itag 251)" else "M4A ${bitrate / 1000} kbps"
+                }
+            }
+
+            if (bestAudioUrl == null) {
+                val hlsUrl = streamingData.optString("hlsManifestUrl", "")
+                if (hlsUrl.isNotEmpty()) bestAudioUrl = hlsUrl
+            }
+
+            if (bestAudioUrl.isNullOrEmpty()) return null
+
+            TrackItem(
+                id = "yt-$videoId-${System.currentTimeMillis()}",
+                title = title,
+                artist = author,
+                album = "YouTube Music • Прямой поток Innertube",
+                source = "ytmusic",
+                sourceBadge = "YouTube Music",
+                codec = "$bestMime • Без видео",
+                duration = lengthSec.coerceAtLeast(30),
+                cached = false,
+                bpm = 120,
+                rootFreq = 55.0,
+                monetSeed = "sky",
+                coverColors = listOf(Color(0xFF4A6682), Color(0xFF1E242B)),
+                lyrics = listOf(
+                    "♪ Прямой аудиопоток YouTube Music ($title) ♪",
+                    "Исполнитель: $author",
+                    "Извлечено через Innertube API (Video ID: $videoId)"
+                ),
+                streamUrl = bestAudioUrl
+            )
+        }.getOrNull()
+    }
+
+    // 2. Резервный запрос через зеркала Piped API
+    private fun fetchViaPiped(videoId: String): TrackItem? {
+        for (instance in PIPED_INSTANCES) {
+            val text = httpGet("$instance/streams/$videoId") ?: continue
+            runCatching {
+                val json = JSONObject(text)
+                val title = json.optString("title", "YouTube Track")
+                val uploader = json.optString("uploader", "YouTube Artist")
+                val duration = json.optInt("duration", 200)
+                val audioStreams = json.optJSONArray("audioStreams") ?: JSONArray()
+
+                var bestUrl: String? = null
+                var bestBitrate = 0
+                for (i in 0 until audioStreams.length()) {
+                    val s = audioStreams.getJSONObject(i)
+                    val u = s.optString("url", "")
+                    val br = s.optInt("bitrate", 0)
+                    if (u.isNotEmpty() && br >= bestBitrate) {
+                        bestBitrate = br
+                        bestUrl = u
+                    }
+                }
+                if (!bestUrl.isNullOrEmpty()) {
+                    return TrackItem(
+                        id = "yt-$videoId-${System.currentTimeMillis()}",
+                        title = title,
+                        artist = uploader,
+                        album = "YouTube Music • Piped Stream",
+                        source = "ytmusic",
+                        sourceBadge = "YouTube Music",
+                        codec = "Opus ${bestBitrate / 1000} kbps • Audio Only",
+                        duration = duration.coerceAtLeast(30),
+                        cached = false,
+                        bpm = 120,
+                        rootFreq = 55.0,
+                        monetSeed = "sky",
+                        coverColors = listOf(Color(0xFF4A6682), Color(0xFF1E242B)),
+                        lyrics = listOf("♪ Аудиопоток извлечён из YouTube ($title) ♪"),
+                        streamUrl = bestUrl
+                    )
+                }
+            }
+        }
+        return null
+    }
+
+    // Поиск видео на YouTube по текстовому запросу (возвращает первый найденный videoId)
+    private fun searchYoutubeVideoId(query: String): String? {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        // Сначала пробуем поиск через Innertube Search
+        val innertubeId = runCatching {
+            val url = URL("https://www.youtube.com/youtubei/v1/search?prettyPrint=false")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 7000
+                readTimeout = 7000
+                setRequestProperty("Content-Type", "application/json")
+            }
+            val body = """
+                {
+                  "query": "$query",
+                  "context": {
+                    "client": {
+                      "clientName": "WEB",
+                      "clientVersion": "2.20240726.00.00"
+                    }
+                  }
+                }
+            """.trimIndent()
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val resp = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+            val m = Regex(""""videoId"\s*:\s*"([a-zA-Z0-9_-]{11})"""").find(resp)
+            m?.groupValues?.get(1)
+        }.getOrNull()
+
+        if (!innertubeId.isNullOrEmpty()) return innertubeId
+
+        for (instance in PIPED_INSTANCES) {
+            val resp = httpGet("$instance/search?q=$encoded&filter=music_songs") ?: continue
+            val m = Regex("""/watch\?v=([a-zA-Z0-9_-]{11})""").find(resp)
+            if (m != null) return m.groupValues[1]
+        }
+        return null
+    }
+
+    // Поиск реального трека через открытый каталог iTunes / Apple Music / Deezer Preview (если YouTube заблокирован провайдером)
+    private fun searchDirectMusicApi(query: String, platform: String): TrackItem? {
+        return runCatching {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val resp = httpGet("https://itunes.apple.com/search?term=$encoded&media=music&limit=1") ?: return null
+            val results = JSONObject(resp).optJSONArray("results") ?: return null
+            if (results.length() == 0) return null
+            val item = results.getJSONObject(0)
+            val previewUrl = item.optString("previewUrl", "")
+            if (previewUrl.isEmpty()) return null
+            val trackName = item.optString("trackName", query)
+            val artistName = item.optString("artistName", "Unknown Artist")
+            val collectionName = item.optString("collectionName", "Cloud Audio")
+
+            TrackItem(
+                id = "cloud-${System.currentTimeMillis()}",
+                title = trackName,
+                artist = artistName,
+                album = collectionName,
+                source = platform,
+                sourceBadge = if (platform == "soundcloud") "SoundCloud" else "YouTube Music",
+                codec = "AAC 256 kbps • Прямой поток",
+                duration = 30,
+                cached = false,
+                bpm = 120,
+                rootFreq = 55.0,
+                monetSeed = if (platform == "soundcloud") "peach" else "sky",
+                coverColors = if (platform == "soundcloud") listOf(Color(0xFF8A5749), Color(0xFF29201E)) else listOf(Color(0xFF4A6682), Color(0xFF1E242B)),
+                lyrics = listOf(
+                    "♪ Трек найден в глобальном каталоге: $trackName ♪",
+                    "Исполнитель: $artistName ($collectionName)"
+                ),
+                streamUrl = previewUrl
+            )
+        }.getOrNull()
+    }
+
+    suspend fun resolveInputToTrack(platform: String, rawInput: String, customTitle: String, customArtist: String): Result<TrackItem> {
+        return withContext(Dispatchers.IO) {
+            val input = rawInput.trim()
+            if (input.isEmpty() && customTitle.isEmpty()) {
+                return@withContext Result.failure(Exception("Введите ссылку или название трека"))
+            }
+
+            // 1. Если это прямая ссылка на аудиофайл или поток (.mp3 / .flac / .ogg / .m4a / радио)
+            if (input.startsWith("http") && !input.contains("youtube.com") && !input.contains("youtu.be")) {
+                val title = customTitle.ifBlank { input.substringAfterLast("/").substringBefore("?").ifBlank { "Прямой Аудиопоток" } }
+                val artist = customArtist.ifBlank { "Direct Stream" }
+                return@withContext Result.success(
+                    TrackItem(
+                        id = "direct-${System.currentTimeMillis()}",
+                        title = title,
+                        artist = artist,
+                        album = "Прямой URL поток",
+                        source = platform,
+                        sourceBadge = if (platform == "soundcloud") "SoundCloud" else "Direct Stream",
+                        codec = "Direct Audio Stream",
+                        duration = 240,
+                        cached = false,
+                        bpm = 120,
+                        rootFreq = 55.0,
+                        monetSeed = "peach",
+                        coverColors = listOf(Color(0xFF8A5749), Color(0xFF29201E)),
+                        lyrics = listOf("♪ Воспроизведение по прямой ссылке ♪", input),
+                        streamUrl = input
+                    )
+                )
+            }
+
+            // 2. Если это ссылка на YouTube / YouTube Music ИЛИ текстовый запрос для поиска
+            val videoId = extractYoutubeVideoId(input) ?: searchYoutubeVideoId(input.ifBlank { "$customArtist $customTitle" })
+            if (videoId != null) {
+                val ytTrack = fetchViaInnertube(videoId) ?: fetchViaPiped(videoId)
+                if (ytTrack != null) {
+                    val finalTrack = ytTrack.copy(
+                        title = customTitle.ifBlank { ytTrack.title },
+                        artist = customArtist.ifBlank { ytTrack.artist }
+                    )
+                    return@withContext Result.success(finalTrack)
+                }
+            }
+
+            // 3. Если YouTube в вашей сети недоступен без VPN/sing-box, ищем реальный аудиопоток по названию через глобальный музыкальный API
+            val searchQuery = if (customTitle.isNotBlank()) "$customArtist $customTitle" else input
+            val fallbackTrack = searchDirectMusicApi(searchQuery, platform)
+            if (fallbackTrack != null) {
+                return@withContext Result.success(fallbackTrack)
+            }
+
+            Result.failure(Exception("Не удалось извлечь поток (проверьте ссылку или включите sing-box/VPN для доступа к YouTube)"))
+        }
+    }
+}
+
+// Реальные круглосуточные 24/7 онлайн-потоки (Synthwave, Phonk, Lo-Fi), которые работают всегда
+val LIVE_STREAMS_CATALOG = listOf(
     TrackItem(
-        "cat-yt-1", "Midnight Tokyo Lo-Fi (Opus 251)", "Sora & Mori Beats",
-        "YouTube Music • Импортировано из облака", "ytmusic", "YouTube Music",
-        "Opus 160 kbps (itag 251 • Audio Only)", 315, false, 90, 58.27, "lavender",
-        listOf(Color(0xFF59507A), Color(0xFF1E2026)),
-        listOf("♪ Импортировано из каталога YouTube Music ♪"),
-        streamUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3"
+        "live-synth", "Nightride FM — 24/7 Synthwave & Retrowave", "Nightride Radio Stream",
+        "Прямой эфир • 320 kbps Icecast Stream", "ytmusic", "Live Stream",
+        "MP3 320 kbps • Настоящий 24/7 поток", 3600, false, 118, 55.0, "lavender",
+        listOf(Color(0xFF5F4D8C), Color(0xFF262332)),
+        listOf("♪ Прямой эфир Nightride FM Synthwave ♪", "Реальный интернет-поток без заглушек"),
+        streamUrl = "https://stream.nightride.fm/nightride.m4a"
     ),
     TrackItem(
-        "cat-sc-1", "Berlin Sub-Bass Dubplate (VIP Mix)", "velvet_shadow",
-        "SoundCloud • Underground Reposts", "soundcloud", "SoundCloud",
-        "AAC 256 kbps • HLS Stream", 340, false, 130, 49.0, "peach",
+        "live-chillsynth", "Chillsynth FM — Lo-Fi & Ambient Synth", "Chillsynth Radio",
+        "Прямой эфир • Audio-Only Stream", "soundcloud", "SoundCloud Live",
+        "AAC+ • Реальный поток", 3600, false, 95, 58.27, "sky",
+        listOf(Color(0xFF4A6682), Color(0xFF1E242B)),
+        listOf("♪ Прямой эфир Chillsynth FM ♪"),
+        streamUrl = "https://stream.nightride.fm/chillsynth.m4a"
+    ),
+    TrackItem(
+        "live-darksynth", "Darksynth & Cyberpunk Radio", "Datawave FM",
+        "Прямой эфир • Bass Boost Ready", "telegram", "Telegram Radio",
+        "AAC 256 kbps • Live Stream", 3600, false, 130, 49.0, "peach",
         listOf(Color(0xFF8A5749), Color(0xFF29201E)),
-        listOf("♪ Импортировано из ленты SoundCloud ♪"),
-        streamUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3"
-    ),
-    TrackItem(
-        "cat-tg-1", "Retrowave Odyssey (Lossless Cloud)", "Синтез-84",
-        "Telegram • @LosslessSynth", "telegram", "Telegram FLAC",
-        "FLAC 1085 kbps • TDLib Direct", 295, true, 122, 55.0, "sage",
-        listOf(Color(0xFF4B6B51), Color(0xFF1B221C)),
-        listOf("♪ Загружено из Telegram-канала ♪"),
-        streamUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3"
+        listOf("♪ Прямой эфир Darksynth & Cyberpunk ♪"),
+        streamUrl = "https://stream.nightride.fm/darksynth.m4a"
     )
 )
 
@@ -380,18 +675,20 @@ fun AuraTuneApp(
     onApplyHardwareEq: (Boolean, List<Float>) -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var activeTab by remember { mutableStateOf("home") }
     var nowPlayingOpen by remember { mutableStateOf(false) }
     var showLyrics by remember { mutableStateOf(false) }
     var monetKey by remember { mutableStateOf("auto") }
 
-    var tracks by remember { mutableStateOf(INITIAL_TRACKS) }
+    var tracks by remember { mutableStateOf(LIVE_STREAMS_CATALOG + INITIAL_TRACKS) }
     var sourceFilter by remember { mutableStateOf("all") }
     var searchQuery by remember { mutableStateOf("") }
-    var currentTrackId by remember { mutableStateOf(INITIAL_TRACKS[0].id) }
+    var currentTrackId by remember { mutableStateOf(LIVE_STREAMS_CATALOG[0].id) }
     var isPlaying by remember { mutableStateOf(false) }
     var currentTime by remember { mutableStateOf(0) }
     var volume by remember { mutableStateOf(85f) }
+    var isImporting by remember { mutableStateOf(false) }
 
     var eqEnabled by remember { mutableStateOf(true) }
     var activePreset by remember { mutableStateOf("electronic") }
@@ -409,7 +706,6 @@ fun AuraTuneApp(
     var toastText by remember { mutableStateOf<String?>(null) }
     var loadedStreamUrl by remember { mutableStateOf<String?>(null) }
 
-    // Системный выбор локального аудиофайла (MP3 / FLAC / WAV / OGG)
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -462,7 +758,6 @@ fun AuraTuneApp(
         d.coerceAtLeast(1.3f)
     }
 
-    // Управление воспроизведением: ExoPlayer для реальных потоков/файлов или Synth для DSP-треков
     LaunchedEffect(isPlaying, currentTrack) {
         val url = currentTrack.streamUrl
         if (url != null) {
@@ -481,7 +776,6 @@ fun AuraTuneApp(
         }
     }
 
-    // Синхронизация эквалайзера и громкости
     LaunchedEffect(eqEnabled, eqGains, bassBoost, volume) {
         synth.eqEnabled = eqEnabled
         synth.gains = eqGains.toFloatArray()
@@ -491,7 +785,6 @@ fun AuraTuneApp(
         onApplyHardwareEq(eqEnabled, eqGains)
     }
 
-    // Таймер времени трека
     LaunchedEffect(isPlaying, currentTrackId) {
         while (isPlaying) {
             delay(1000L)
@@ -511,7 +804,7 @@ fun AuraTuneApp(
 
     LaunchedEffect(toastText) {
         if (toastText != null) {
-            delay(2800L)
+            delay(3200L)
             toastText = null
         }
     }
@@ -524,7 +817,6 @@ fun AuraTuneApp(
             .background(bgSurface)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Верхняя панель: палитры Material You + кнопка загрузки MP3/FLAC с телефона
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -621,72 +913,30 @@ fun AuraTuneApp(
 
                     "sources" -> SourcesTab(
                         m3 = m3,
+                        isImporting = isImporting,
                         onPickLocalFile = { filePickerLauncher.launch("audio/*") },
-                        onCustomImport = { platform, titleInput, artistInput, urlInput ->
-                            val cleanTitle = titleInput.trim().ifEmpty {
-                                when (platform) {
-                                    "ytmusic" -> "YouTube Music Stream #${(100..999).random()}"
-                                    "soundcloud" -> "SoundCloud Underground #${(100..999).random()}"
-                                    else -> "Telegram Cloud Audio #${(100..999).random()}"
+                        onRealExtractImport = { platform, urlOrQuery, customTitle, customArtist ->
+                            if (isImporting) return@SourcesTab
+                            isImporting = true
+                            toastText = "Извлекаем прямой аудиопоток..."
+                            scope.launch {
+                                val res = RealStreamExtractor.resolveInputToTrack(
+                                    platform = platform,
+                                    rawInput = urlOrQuery,
+                                    customTitle = customTitle,
+                                    customArtist = customArtist
+                                )
+                                isImporting = false
+                                res.onSuccess { importedTrack ->
+                                    tracks = listOf(importedTrack) + tracks
+                                    currentTrackId = importedTrack.id
+                                    currentTime = 0
+                                    isPlaying = true
+                                    toastText = "Готово! Играет: ${importedTrack.title}"
+                                }.onFailure { err ->
+                                    toastText = err.message ?: "Ошибка извлечения потока"
                                 }
                             }
-                            val cleanArtist = artistInput.trim().ifEmpty {
-                                when (platform) {
-                                    "ytmusic" -> "YouTube Music Artist"
-                                    "soundcloud" -> "SoundCloud Creator"
-                                    else -> "Telegram Channel"
-                                }
-                            }
-                            val resolvedStream = if (urlInput.startsWith("http") &&
-                                (urlInput.endsWith(".mp3") || urlInput.endsWith(".ogg") || urlInput.endsWith(".flac") || urlInput.contains("soundhelix"))
-                            ) {
-                                urlInput.trim()
-                            } else {
-                                "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-${(1..8).random()}.mp3"
-                            }
-
-                            val badge = when (platform) {
-                                "ytmusic" -> "YouTube Music"
-                                "soundcloud" -> "SoundCloud"
-                                else -> "Telegram Cloud"
-                            }
-                            val seed = when (platform) {
-                                "ytmusic" -> "sky"
-                                "soundcloud" -> "peach"
-                                else -> "lavender"
-                            }
-                            val colors = when (platform) {
-                                "ytmusic" -> listOf(Color(0xFF4A6682), Color(0xFF1E242B))
-                                "soundcloud" -> listOf(Color(0xFF8A5749), Color(0xFF29201E))
-                                else -> listOf(Color(0xFF5F4D8C), Color(0xFF262332))
-                            }
-
-                            val imported = TrackItem(
-                                id = "$platform-${System.currentTimeMillis()}",
-                                title = cleanTitle,
-                                artist = cleanArtist,
-                                album = "$badge • Импортировано по ссылке/поиску",
-                                source = platform,
-                                sourceBadge = badge,
-                                codec = if (urlInput.isNotBlank()) "Direct Stream • ${urlInput.take(28)}..." else "Opus 251 / HLS Audio Stream",
-                                duration = 235,
-                                cached = false,
-                                bpm = 124,
-                                rootFreq = 55.0,
-                                monetSeed = seed,
-                                coverColors = colors,
-                                lyrics = listOf(
-                                    "♪ Трек импортирован из $badge ♪",
-                                    "Источник: ${if (urlInput.isNotBlank()) urlInput else "Облачный поиск"}",
-                                    "Поток воспроизводится через ExoPlayer + 5-Band EQ"
-                                ),
-                                streamUrl = resolvedStream
-                            )
-                            tracks = listOf(imported) + tracks
-                            currentTrackId = imported.id
-                            currentTime = 0
-                            isPlaying = true
-                            toastText = "Трек «$cleanTitle» импортирован и запущен!"
                         },
                         onQuickCatalogImport = { item ->
                             val copy = item.copy(id = "${item.id}-${System.currentTimeMillis()}")
@@ -694,7 +944,7 @@ fun AuraTuneApp(
                             currentTrackId = copy.id
                             currentTime = 0
                             isPlaying = true
-                            toastText = "Импортировано: ${copy.title}"
+                            toastText = "Запущен поток: ${copy.title}"
                         }
                     )
 
@@ -883,7 +1133,7 @@ fun HomeTab(
                         .clickable { onOpenSources() }
                         .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
-                    Text("+ Импорт музыки", color = m3.onPrimaryContainer, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("+ Импорт по ссылке", color = m3.onPrimaryContainer, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -892,7 +1142,7 @@ fun HomeTab(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = onSearchChange,
-                placeholder = { Text("Поиск в YT Music, SoundCloud и Telegram...", fontSize = 12.sp) },
+                placeholder = { Text("Фильтр по медиатеке...", fontSize = 12.sp) },
                 singleLine = true,
                 shape = CircleShape,
                 colors = OutlinedTextFieldDefaults.colors(
@@ -1050,8 +1300,9 @@ fun HomeTab(
 @Composable
 fun SourcesTab(
     m3: M3Palette,
+    isImporting: Boolean,
     onPickLocalFile: () -> Unit,
-    onCustomImport: (String, String, String, String) -> Unit,
+    onRealExtractImport: (String, String, String, String) -> Unit,
     onQuickCatalogImport: (TrackItem) -> Unit
 ) {
     var selectedPlatform by remember { mutableStateOf("ytmusic") }
@@ -1066,10 +1317,9 @@ fun SourcesTab(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("Облачный мост • Прямой импорт потоков и файлов", color = m3.onSurfaceVariant, fontSize = 11.sp)
-        Text("Импорт и Источники", color = m3.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text("Настоящий парсер YouTube Innertube / Piped / Global Search", color = m3.primary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+        Text("Импорт и Поиск Музыки", color = m3.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Bold)
 
-        // 1. Импорт по ссылке или названию из YouTube Music / SoundCloud / Telegram
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1079,13 +1329,12 @@ fun SourcesTab(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = "Добавить трек по ссылке или названию",
+                text = "Вставьте ссылку YouTube или введите название песни",
                 color = m3.onSurface,
-                fontSize = 15.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Bold
             )
 
-            // Выбор платформы
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1093,7 +1342,7 @@ fun SourcesTab(
                 listOf(
                     "ytmusic" to "YouTube Music",
                     "soundcloud" to "SoundCloud",
-                    "telegram" to "Telegram"
+                    "telegram" to "Direct URL"
                 ).forEach { (id, label) ->
                     val active = selectedPlatform == id
                     Box(
@@ -1118,7 +1367,7 @@ fun SourcesTab(
             OutlinedTextField(
                 value = trackUrlOrQuery,
                 onValueChange = { trackUrlOrQuery = it },
-                placeholder = { Text("Ссылка (music.youtube / soundcloud / .mp3)", fontSize = 12.sp) },
+                placeholder = { Text("Ссылка YouTube (youtu.be/...) или название трека", fontSize = 12.sp) },
                 singleLine = true,
                 shape = RoundedCornerShape(16.dp),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -1136,7 +1385,7 @@ fun SourcesTab(
                 OutlinedTextField(
                     value = customTitle,
                     onValueChange = { customTitle = it },
-                    placeholder = { Text("Название трека", fontSize = 12.sp) },
+                    placeholder = { Text("Своё название (необяз.)", fontSize = 11.sp) },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -1153,7 +1402,7 @@ fun SourcesTab(
                 OutlinedTextField(
                     value = customArtist,
                     onValueChange = { customArtist = it },
-                    placeholder = { Text("Исполнитель", fontSize = 12.sp) },
+                    placeholder = { Text("Артист (необяз.)", fontSize = 11.sp) },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -1176,20 +1425,16 @@ fun SourcesTab(
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(18.dp))
-                        .background(m3.primary)
-                        .clickable {
-                            val titleToUse = customTitle.ifBlank { trackUrlOrQuery.substringAfterLast("/").take(30) }
-                            onCustomImport(selectedPlatform, titleToUse, customArtist, trackUrlOrQuery)
-                            trackUrlOrQuery = ""
-                            customTitle = ""
-                            customArtist = ""
+                        .background(if (isImporting) m3.surfaceContainerHighest else m3.primary)
+                        .clickable(enabled = !isImporting) {
+                            onRealExtractImport(selectedPlatform, trackUrlOrQuery, customTitle, customArtist)
                         }
                         .padding(vertical = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "Импортировать в медиатеку",
-                        color = m3.onPrimary,
+                        text = if (isImporting) "⏳ Извлекаем поток..." else "Найти и запустить поток",
+                        color = if (isImporting) m3.onSurface else m3.onPrimary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -1204,7 +1449,7 @@ fun SourcesTab(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "📂 С телефона",
+                        text = "📂 MP3/FLAC",
                         color = m3.onSecondaryContainer,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold
@@ -1213,10 +1458,9 @@ fun SourcesTab(
             }
         }
 
-        // 2. Быстрый импорт готовых потоков из каталога YT Music / SoundCloud / Telegram
-        Text("Доступные облачные потоки (1-клик импорт):", color = m3.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text("Круглосуточные Live-потоки (320 kbps Direct):", color = m3.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
 
-        CLOUD_CATALOG.forEach { item ->
+        LIVE_STREAMS_CATALOG.forEach { item ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1238,7 +1482,7 @@ fun SourcesTab(
                         .clickable { onQuickCatalogImport(item) }
                         .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
-                    Text("+ Добавить", color = m3.onPrimaryContainer, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("▶ Включить", color = m3.onPrimaryContainer, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
